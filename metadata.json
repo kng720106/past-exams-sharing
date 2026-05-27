@@ -1,0 +1,8 @@
+{
+  "name": "UniExam Share",
+  "description": "大学内の過去問や講義資料を共有するためのプラットフォーム",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

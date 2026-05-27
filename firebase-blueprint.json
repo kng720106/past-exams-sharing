@@ -1,0 +1,139 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "A user of the application",
+      "type": "object",
+      "properties": {
+        "email": { "type": "string", "format": "email" },
+        "points": { "type": "integer" },
+        "role": { "type": "string", "enum": ["user", "admin"] },
+        "createdAt": { "type": "timestamp" },
+        "updatedAt": { "type": "timestamp" }
+      },
+      "required": ["email", "points", "role", "createdAt", "updatedAt"]
+    },
+    "Exam": {
+      "title": "Exam",
+      "description": "A past exam or lecture material",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string" },
+        "courseId": { "type": "string" },
+        "courseName": { "type": "string" },
+        "bandai": { "type": "integer" },
+        "category": { "type": "string" },
+        "instructor": { "type": "string" },
+        "year": { "type": "integer" },
+        "type": { "type": "string", "enum": ["pdf", "image"] },
+        "fileUrl": { "type": "string" },
+        "authorId": { "type": "string" },
+        "downloadsCount": { "type": "integer" },
+        "reportsCount": { "type": "integer" },
+        "createdAt": { "type": "timestamp" },
+        "updatedAt": { "type": "timestamp" }
+      },
+      "required": ["title", "courseId", "courseName", "bandai", "category", "instructor", "year", "type", "fileUrl", "authorId", "downloadsCount", "reportsCount", "createdAt", "updatedAt"]
+    },
+    "Report": {
+      "title": "Report",
+      "description": "A report on an exam document",
+      "type": "object",
+      "properties": {
+        "examId": { "type": "string" },
+        "reporterId": { "type": "string" },
+        "reason": { "type": "string" },
+        "status": { "type": "string", "enum": ["pending", "resolved", "dismissed"] },
+        "createdAt": { "type": "timestamp" }
+      },
+      "required": ["examId", "reporterId", "reason", "status", "createdAt"]
+    },
+    "Download": {
+      "title": "Download Record",
+      "description": "Record of a user downloading an exam",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "downloadedAt": { "type": "timestamp" }
+      },
+      "required": ["userId", "downloadedAt"]
+    },
+    "Request": {
+      "title": "Request",
+      "description": "A user request for a specific past exam or lecture material",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string" },
+        "courseName": { "type": "string" },
+        "professor": { "type": "string" },
+        "description": { "type": "string" },
+        "authorId": { "type": "string" },
+        "status": { "type": "string", "enum": ["open", "fulfilled", "closed"] },
+        "createdAt": { "type": "timestamp" },
+        "updatedAt": { "type": "timestamp" }
+      },
+      "required": ["title", "courseName", "professor", "description", "authorId", "status", "createdAt", "updatedAt"]
+    },
+    "Course": {
+      "title": "Course",
+      "description": "A course that exams can be uploaded to (Science Tokyo structure)",
+      "type": "object",
+      "properties": {
+        "courseCode": { "type": "string" },
+        "bandai": { "type": "integer" },
+        "category": { "type": "string" },
+        "name": { "type": "string" },
+        "instructor": { "type": "string" },
+        "term": { "type": "string" },
+        "createdAt": { "type": "timestamp" },
+        "updatedAt": { "type": "timestamp" }
+      },
+      "required": ["courseCode", "bandai", "category", "name", "instructor", "term", "createdAt", "updatedAt"]
+    },
+    "Review": {
+      "title": "Review",
+      "description": "A user review/comment on a past exam",
+      "type": "object",
+      "properties": {
+        "examId": { "type": "string" },
+        "userId": { "type": "string" },
+        "userName": { "type": "string" },
+        "rating": { "type": "integer" },
+        "comment": { "type": "string" },
+        "createdAt": { "type": "timestamp" },
+        "updatedAt": { "type": "timestamp" }
+      },
+      "required": ["examId", "userId", "userName", "rating", "comment", "createdAt", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/User" },
+      "description": "User profiles"
+    },
+    "/exams/{examId}": {
+      "schema": { "$ref": "#/entities/Exam" },
+      "description": "Uploaded past exams"
+    },
+    "/reports/{reportId}": {
+      "schema": { "$ref": "#/entities/Report" },
+      "description": "Reports for appropriate content"
+    },
+    "/exams/{examId}/downloads/{downloadId}": {
+      "schema": { "$ref": "#/entities/Download" },
+      "description": "Download history for an exam"
+    },
+    "/requests/{requestId}": {
+      "schema": { "$ref": "#/entities/Request" },
+      "description": "User requests for materials"
+    },
+    "/courses/{courseId}": {
+      "schema": { "$ref": "#/entities/Course" },
+      "description": "Available courses"
+    },
+    "/reviews/{reviewId}": {
+      "schema": { "$ref": "#/entities/Review" },
+      "description": "Reviews and comments for exams"
+    }
+  }
+}

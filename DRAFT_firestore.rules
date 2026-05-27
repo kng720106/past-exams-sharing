@@ -1,0 +1,155 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 0. Global Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --------------------------------------------------------------------------
+    // Primitive Definition
+    // --------------------------------------------------------------------------
+    function isSignedIn() { return request.auth != null; }
+    function isVerified() { return request.auth.token.email_verified == true; }
+    function isEmailValid() {
+      // Must have domain @m.isct.ac.jp
+      return request.auth.token.email != null &&
+             request.auth.token.email.matches('.*@m\\.isct\\.ac\\.jp');
+    }
+    // We enforce 1, 2, 3 so let's combine:
+    function isAuthenticated() { return isSignedIn() && isVerified() && isEmailValid(); }
+
+    function incoming() { return request.resource.data; }
+    function existing() { return resource.data; }
+    function isValidId(id) { return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$'); }
+
+    // Admins logic (dummy, users with role 'admin' in users doc)
+    function isAdmin() {
+      return isAuthenticated() &&
+             exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+             get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+    }
+
+    // --------------------------------------------------------------------------
+    // Validation Blueprints
+    // --------------------------------------------------------------------------
+    function isValidUser(data) {
+      return data.keys().hasAll(['email', 'points', 'role', 'createdAt', 'updatedAt']) &&
+             data.keys().size() in [5, 6] &&
+             data.email == request.auth.token.email &&
+             data.points is integer &&
+             data.points >= 0 &&
+             data.role in ['user', 'admin'] &&
+             data.createdAt is string &&
+             data.updatedAt is string;
+    }
+
+    function isValidExam(data) {
+      return data.keys().hasAll(['title', 'courseName', 'professor', 'faculty', 'year', 'type', 'fileUrl', 'authorId', 'downloadsCount', 'reportsCount', 'createdAt', 'updatedAt']) &&
+             data.title is string && data.title.size() > 0 && data.title.size() <= 200 &&
+             data.courseName is string && data.courseName.size() > 0 && data.courseName.size() <= 100 &&
+             data.professor is string && data.professor.size() <= 100 &&
+             data.faculty is string && data.faculty.size() <= 100 &&
+             data.year is integer && data.year >= 1900 && data.year <= 2100 &&
+             data.type in ['pdf', 'image'] &&
+             data.fileUrl is string && data.fileUrl.size() > 0 && data.fileUrl.size() <= 1024 &&
+             data.authorId == request.auth.uid &&
+             data.downloadsCount is integer && data.downloadsCount >= 0 &&
+             data.reportsCount is integer && data.reportsCount >= 0 &&
+             data.createdAt is string &&
+             data.updatedAt is string;
+    }
+
+    function isValidReport(data) {
+      return data.keys().hasAll(['examId', 'reporterId', 'reason', 'status', 'createdAt']) &&
+             data.examId is string && data.examId.size() > 0 &&
+             data.reporterId == request.auth.uid &&
+             data.reason is string && data.reason.size() > 0 && data.reason.size() <= 500 &&
+             data.status in ['pending', 'resolved', 'dismissed'] &&
+             data.createdAt is string; // using ISO formatting string to pass JSON schema. actually, timestamp is better in firestore but we follow blueprint
+    }
+
+    function isValidDownload(data) {
+      return data.keys().hasAll(['userId', 'downloadedAt']) &&
+             data.userId == request.auth.uid &&
+             data.downloadedAt is string;
+    }
+
+    // --------------------------------------------------------------------------
+    // Master Gates by Collection
+    // --------------------------------------------------------------------------
+
+    match /users/{userId} {
+      allow get: if isAuthenticated() && (request.auth.uid == userId || isAdmin());
+      // For general app display, maybe we need other users to see basic stuff? No, isolated.
+      // Wait, we need to show author names? If so, we need a public profile or simply store author names in Exam doc. Yes, Exam has authorId but no name. Let's store names later if needed, but for now we'll allow users to read only their own.
+      // Since exams have author info... wait, the user shouldn't need to read other users to download an exam.
+      allow list: if false;
+
+      // Creation
+      allow create: if isAuthenticated() && 
+                    isValidId(userId) && 
+                    userId == request.auth.uid &&
+                    isValidUser(incoming()) &&
+                    incoming().role == 'user'; // cannot self-assign admin
+
+      // Update
+      allow update: if isAuthenticated() && 
+                    isValidId(userId) && 
+                    userId == request.auth.uid &&
+                    isValidUser(incoming()) &&
+                    // user can update their points (dummy basic point system) or role via admin
+                    (
+                      (incoming().diff(existing()).affectedKeys().hasOnly(['updatedAt'])) ||
+                      (incoming().diff(existing()).affectedKeys().hasOnly(['points', 'updatedAt']) && incoming().points >= existing().points) ||
+                      isAdmin()
+                    );
+    }
+
+    match /exams/{examId} {
+      allow get: if isAuthenticated() && isValidId(examId);
+      allow list: if isAuthenticated(); // they can search list of exams
+      
+      allow create: if isAuthenticated() && 
+                    isValidId(examId) && 
+                    isValidExam(incoming()) &&
+                    exists(/databases/$(database)/documents/users/$(request.auth.uid));
+
+      allow update: if isAuthenticated() && 
+                    isValidId(examId) && 
+                    isValidExam(incoming()) &&
+                    incoming().authorId == existing().authorId &&
+                    incoming().createdAt == existing().createdAt &&
+                    (
+                      isAdmin() ||
+                      // author can update metadata
+                      (request.auth.uid == existing().authorId && incoming().diff(existing()).affectedKeys().hasOnly(['title', 'courseName', 'professor', 'faculty', 'year', 'type', 'fileUrl', 'updatedAt'])) ||
+                      // any user can increment downloads / reports
+                      (incoming().diff(existing()).affectedKeys().hasOnly(['downloadsCount', 'updatedAt']) && incoming().downloadsCount == existing().downloadsCount + 1) ||
+                      (incoming().diff(existing()).affectedKeys().hasOnly(['reportsCount', 'updatedAt']) && incoming().reportsCount == existing().reportsCount + 1)
+                    );
+
+      allow delete: if isAuthenticated() && isValidId(examId) && (request.auth.uid == existing().authorId || isAdmin());
+
+      match /downloads/{downloadId} {
+        allow get, list: if isAuthenticated() && isValidId(downloadId) && (request.auth.uid == existing().userId || isAdmin());
+        allow create: if isAuthenticated() &&
+                      isValidId(downloadId) &&
+                      isValidDownload(incoming()) &&
+                      // Ensure parent exam exists
+                      exists(/databases/$(database)/documents/exams/$(examId));
+      }
+    }
+
+    match /reports/{reportId} {
+        allow get, list: if isAuthenticated() && isValidId(reportId) && (request.auth.uid == existing().reporterId || isAdmin());
+        allow create: if isAuthenticated() &&
+                      isValidId(reportId) &&
+                      isValidReport(incoming()) &&
+                      exists(/databases/$(database)/documents/exams/$(incoming().examId));
+        // Admin only for updates
+        allow update: if isAdmin();
+    }
+  }
+}

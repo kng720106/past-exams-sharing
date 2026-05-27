@@ -1,0 +1,319 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 0. Global Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --------------------------------------------------------------------------
+    // Primitive Definition
+    // --------------------------------------------------------------------------
+    function isSignedIn() { return request.auth != null; }
+    function isVerified() { return request.auth.token.email_verified == true; }
+    function isEmailValid() {
+      return request.auth.token.email != null &&
+             (request.auth.token.email.matches('^.*@m\\.isct\\.ac\\.jp$') || 
+              request.auth.token.email == 'teduryu@gmail.com');
+    }
+    // Only verified emails matching the domain
+    function isAuthenticated() { return isSignedIn() && isVerified() && isEmailValid(); }
+
+    function incoming() { return request.resource.data; }
+    function existing() { return resource.data; }
+    function isValidId(id) { return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_-]+$'); }
+
+    // Admin lookup
+    function isAdmin() {
+      return isAuthenticated() &&
+             (
+               (exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+               get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin') ||
+               request.auth.token.email == 'tezuka.r.a926@m.isct.ac.jp' ||
+               request.auth.token.email == 'teduryu@gmail.com'
+             );
+    }
+
+    // --------------------------------------------------------------------------
+    // Validation Blueprints
+    // --------------------------------------------------------------------------
+    function isValidUser(data) {
+      return data.keys().hasAll(['email', 'points', 'role', 'createdAt', 'updatedAt']) &&
+             data.keys().size() <= 8 && 
+             data.email is string &&
+             data.points is int &&
+             data.points >= 0 &&
+             data.role in ['user', 'admin'] &&
+             (!data.keys().hasAny(['lastExamId']) || data.lastExamId is string) &&
+             (!data.keys().hasAny(['lastDownloadExamId']) || data.lastDownloadExamId is string) &&
+             (!data.keys().hasAny(['downloadedExams']) || data.downloadedExams is list) &&
+             data.createdAt is timestamp &&
+             data.updatedAt is timestamp;
+    }
+    
+    function isValidExam(data) {
+      return data.keys().hasAll(['title', 'courseId', 'courseName', 'bandai', 'instructor', 'year', 'type', 'authorId', 'createdAt', 'updatedAt']) &&
+             data.keys().size() <= 14 &&
+             data.title is string && data.title.size() > 0 && data.title.size() <= 200 &&
+             data.courseId is string && data.courseId.size() > 0 && data.courseId.size() <= 128 &&
+             data.courseName is string && data.courseName.size() > 0 && data.courseName.size() <= 100 &&
+             data.bandai is int && data.bandai >= 0 && data.bandai <= 900 &&
+             data.get('category', '') is string && data.get('category', '').size() <= 100 &&
+             data.instructor is string && data.instructor.size() <= 100 &&
+             data.year is int && data.year >= 1900 && data.year <= 2100 &&
+             data.type in ['pdf', 'image'] &&
+             data.authorId is string && data.authorId.size() > 0 &&
+             (!data.keys().hasAny(['lastReportId']) || data.lastReportId is string) &&
+             (!data.keys().hasAny(['tags']) || data.tags is list) && 
+             data.get('downloadsCount', 0) is int && data.get('downloadsCount', 0) >= 0 &&
+             data.get('reportsCount', 0) is int && data.get('reportsCount', 0) >= 0 &&
+             data.createdAt is timestamp &&
+             data.updatedAt is timestamp;
+    }
+
+    function isValidReport(data) {
+      return data.keys().hasAll(['examId', 'reporterId', 'reason', 'status', 'createdAt']) &&
+             data.keys().size() == 5 &&
+             data.examId is string && data.examId.size() > 0 &&
+             data.reporterId is string && data.reporterId.size() > 0 &&
+             data.reason is string && data.reason.size() > 0 && data.reason.size() <= 500 &&
+             data.status in ['pending', 'resolved', 'dismissed'] &&
+             data.createdAt is timestamp;
+    }
+
+    function isValidRequest(data) {
+      return data.keys().hasAll(['title', 'courseName', 'professor', 'description', 'authorId', 'status', 'createdAt', 'updatedAt']) &&
+             data.keys().size() == 8 &&
+             data.title is string && data.title.size() > 0 && data.title.size() <= 200 &&
+             data.courseName is string && data.courseName.size() <= 100 &&
+             data.professor is string && data.professor.size() <= 100 &&
+             data.description is string && data.description.size() <= 1000 &&
+             data.authorId is string && data.authorId.size() > 0 &&
+             data.status in ['open', 'fulfilled', 'closed'] &&
+             data.createdAt is timestamp &&
+             data.updatedAt is timestamp;
+    }
+
+    function isValidDownload(data) {
+      return data.keys().hasAll(['userId', 'downloadedAt']) &&
+             data.keys().size() == 2 &&
+             data.userId == request.auth.uid &&
+             data.downloadedAt is timestamp;
+    }
+
+    // --------------------------------------------------------------------------
+    // Master Gates by Collection
+    // --------------------------------------------------------------------------
+
+    function isValidCourse(data) {
+      return data.keys().hasAll(['courseCode', 'bandai', 'category', 'name', 'instructor', 'term', 'createdAt', 'updatedAt']) &&
+             data.keys().size() == 8 &&
+             data.courseCode is string && data.courseCode.size() <= 50 &&
+             data.bandai is int && data.bandai >= 0 && data.bandai <= 900 &&
+             data.category is string && data.category.size() <= 100 &&
+             data.name is string && data.name.size() > 0 && data.name.size() <= 150 &&
+             data.instructor is string && data.instructor.size() <= 100 &&
+             data.term is string && data.term.size() <= 50 &&
+             data.createdAt is timestamp &&
+             data.updatedAt is timestamp;
+    }
+
+    match /users/{userId} {
+      allow get: if isAuthenticated() && (request.auth.uid == userId || isAdmin());
+      allow list: if isAuthenticated() && isAdmin();
+
+      allow create: if isAuthenticated() && 
+                    isValidId(userId) && 
+                    userId == request.auth.uid &&
+                    isValidUser(incoming()) &&
+                    incoming().email == request.auth.token.email &&
+                    incoming().role == 'user' && // no self admin
+                    incoming().points == 10 &&    // start at 10 (2 free downloads)
+                    incoming().createdAt == request.time &&
+                    incoming().updatedAt == request.time;
+
+      allow update: if isAuthenticated() && 
+                    isValidId(userId) && 
+                    isValidUser(incoming()) &&
+                    incoming().createdAt == existing().createdAt &&
+                    incoming().updatedAt == request.time &&
+                    (
+                      (
+                        userId == request.auth.uid &&
+                        incoming().role == existing().role && // Cannot change own role
+                        (
+                          // Safe point increments via client
+                          (incoming().diff(existing()).affectedKeys().hasOnly(['points', 'updatedAt', 'lastExamId']) && 
+                           incoming().points == existing().points + 10 &&
+                           getAfter(/databases/$(database)/documents/exams/$(incoming().lastExamId)).data.authorId == request.auth.uid &&
+                           getAfter(/databases/$(database)/documents/exams/$(incoming().lastExamId)).data.createdAt == request.time) ||
+                          (incoming().diff(existing()).affectedKeys().hasOnly(['points', 'updatedAt', 'downloadedExams', 'lastDownloadExamId']) && 
+                           incoming().points == existing().points - 5 &&
+                           getAfter(/databases/$(database)/documents/exams/$(incoming().lastDownloadExamId)/downloads/$(request.auth.uid)).data.userId == request.auth.uid) ||
+                          // Or just timestamp & downloadedExams update (e.g. migration)
+                          (incoming().diff(existing()).affectedKeys().hasOnly(['updatedAt', 'downloadedExams']))
+                        )
+                      ) || isAdmin()
+                    );
+    }
+
+    match /exams/{examId} {
+      allow get: if isAuthenticated() && isValidId(examId);
+      allow list: if isAuthenticated();
+      
+      allow create: if isAuthenticated() && 
+                    isValidId(examId) && 
+                    isValidExam(incoming()) &&
+                    incoming().authorId == request.auth.uid &&
+                    incoming().createdAt == request.time &&
+                    incoming().updatedAt == request.time &&
+                    incoming().downloadsCount == 0 &&
+                    incoming().reportsCount == 0 &&
+                    exists(/databases/$(database)/documents/users/$(request.auth.uid));
+
+      allow update: if isAuthenticated() && 
+                    isValidId(examId) && 
+                    isValidExam(incoming()) &&
+                    incoming().authorId == existing().authorId &&
+                    incoming().createdAt == existing().createdAt &&
+                    incoming().updatedAt == request.time &&
+                    (
+                      isAdmin() ||
+                      (request.auth.uid == existing().authorId && incoming().diff(existing()).affectedKeys().hasOnly(['title', 'courseId', 'courseName', 'bandai', 'category', 'instructor', 'year', 'type', 'updatedAt'])) ||
+                      (incoming().diff(existing()).affectedKeys().hasOnly(['downloadsCount', 'updatedAt']) && 
+                       incoming().downloadsCount == existing().get('downloadsCount', 0) + 1 &&
+                       getAfter(/databases/$(database)/documents/exams/$(examId)/downloads/$(request.auth.uid)).data.userId == request.auth.uid) ||
+                      (incoming().diff(existing()).affectedKeys().hasOnly(['reportsCount', 'updatedAt', 'lastReportId']) && 
+                       incoming().reportsCount == existing().get('reportsCount', 0) + 1 &&
+                       getAfter(/databases/$(database)/documents/reports/$(incoming().lastReportId)).data.reporterId == request.auth.uid &&
+                       getAfter(/databases/$(database)/documents/reports/$(incoming().lastReportId)).data.createdAt == request.time)
+                    );
+
+      allow delete: if isAuthenticated() && isValidId(examId) && (request.auth.uid == existing().authorId || isAdmin());
+
+      match /secure/data {
+         allow get: if isAuthenticated() && (
+             request.auth.uid == get(/databases/$(database)/documents/exams/$(examId)).data.authorId ||
+             exists(/databases/$(database)/documents/exams/$(examId)/downloads/$(request.auth.uid)) ||
+             isAdmin()
+         );
+         allow create: if isAuthenticated() &&
+             request.auth.uid == getAfter(/databases/$(database)/documents/exams/$(examId)).data.authorId &&
+             incoming().keys().hasOnly(['fileUrl']) &&
+             incoming().fileUrl is string && incoming().fileUrl.size() > 0;
+         allow delete: if isAuthenticated() && (
+             request.auth.uid == get(/databases/$(database)/documents/exams/$(examId)).data.authorId ||
+             isAdmin()
+         );
+      }
+
+      match /downloads/{downloadId} {
+        allow get, list, delete: if isAuthenticated() && isValidId(downloadId) && (request.auth.uid == downloadId || get(/databases/$(database)/documents/exams/$(examId)).data.authorId == request.auth.uid || isAdmin());
+        allow create: if isAuthenticated() &&
+                      isValidId(downloadId) &&
+                      downloadId == request.auth.uid &&
+                      isValidDownload(incoming()) &&
+                      incoming().downloadedAt == request.time &&
+                      exists(/databases/$(database)/documents/exams/$(examId)) &&
+                      getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data.points == get(/databases/$(database)/documents/users/$(request.auth.uid)).data.points - 5 &&
+                      getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data.lastDownloadExamId == examId;
+      }
+    }
+
+    match /reports/{reportId} {
+        allow get: if isAuthenticated() && isValidId(reportId) && (resource == null || request.auth.uid == resource.data.reporterId || get(/databases/$(database)/documents/exams/$(resource.data.examId)).data.authorId == request.auth.uid || isAdmin());
+        allow list: if isAuthenticated() && isAdmin();
+        allow delete: if isAuthenticated() && isValidId(reportId) && (isAdmin() || (resource != null && request.auth.uid == resource.data.reporterId) || (resource != null && get(/databases/$(database)/documents/exams/$(resource.data.examId)).data.authorId == request.auth.uid));
+        allow create: if isAuthenticated() &&
+                      isValidId(reportId) &&
+                      isValidReport(incoming()) &&
+                      incoming().reporterId == request.auth.uid &&
+                      incoming().createdAt == request.time &&
+                      incoming().status == 'pending' &&
+                      exists(/databases/$(database)/documents/exams/$(incoming().examId));
+        allow update: if isAdmin();
+    }
+
+    function isValidReview(data) {
+      return data.keys().hasAll(['examId', 'userId', 'userName', 'rating', 'comment', 'createdAt', 'updatedAt']) &&
+             data.keys().size() == 7 &&
+             data.examId is string && data.examId.size() > 0 &&
+             data.userId is string && data.userId.size() > 0 &&
+             data.userName is string && data.userName.size() <= 100 &&
+             data.rating is int && data.rating >= 1 && data.rating <= 5 &&
+             data.comment is string && data.comment.size() <= 2000 &&
+             data.createdAt is timestamp &&
+             data.updatedAt is timestamp;
+    }
+
+    match /reviews/{reviewId} {
+        allow get: if isAuthenticated() && isValidId(reviewId);
+        allow list: if isAuthenticated();
+        allow create: if isAuthenticated() &&
+                      isValidId(reviewId) &&
+                      reviewId == request.auth.uid + "_" + incoming().examId &&
+                      isValidReview(incoming()) &&
+                      incoming().userId == request.auth.uid &&
+                      incoming().createdAt == request.time &&
+                      incoming().updatedAt == request.time &&
+                      exists(/databases/$(database)/documents/exams/$(incoming().examId));
+        allow update: if isAuthenticated() &&
+                      isValidId(reviewId) &&
+                      reviewId == request.auth.uid + "_" + incoming().examId &&
+                      isValidReview(incoming()) &&
+                      incoming().userId == existing().userId &&
+                      incoming().userId == request.auth.uid &&
+                      incoming().examId == existing().examId &&
+                      incoming().createdAt == existing().createdAt &&
+                      incoming().updatedAt == request.time;
+        allow delete: if isAuthenticated() && isValidId(reviewId) && (request.auth.uid == existing().userId || isAdmin());
+    }
+
+    match /requests/{requestId} {
+      allow get: if isAuthenticated() && isValidId(requestId);
+      allow list: if isAuthenticated();
+      
+      allow create: if isAuthenticated() && 
+                    isValidId(requestId) && 
+                    isValidRequest(incoming()) &&
+                    incoming().authorId == request.auth.uid &&
+                    incoming().createdAt == request.time &&
+                    incoming().updatedAt == request.time &&
+                    incoming().status == 'open' &&
+                    exists(/databases/$(database)/documents/users/$(request.auth.uid));
+
+      allow update: if isAuthenticated() && 
+                    isValidId(requestId) && 
+                    isValidRequest(incoming()) &&
+                    incoming().authorId == existing().authorId &&
+                    incoming().createdAt == existing().createdAt &&
+                    incoming().updatedAt == request.time &&
+                    (
+                      isAdmin() ||
+                      (request.auth.uid == existing().authorId && incoming().diff(existing()).affectedKeys().hasOnly(['title', 'courseName', 'professor', 'description', 'status', 'updatedAt']))
+                    );
+
+      allow delete: if isAuthenticated() && isValidId(requestId) && (request.auth.uid == existing().authorId || isAdmin());
+    }
+
+    match /courses/{courseId} {
+      allow get: if isAuthenticated() && isValidId(courseId);
+      allow list: if isAuthenticated();
+      
+      allow create: if isAdmin() && 
+                    isValidId(courseId) && 
+                    isValidCourse(incoming()) &&
+                    incoming().createdAt == request.time &&
+                    incoming().updatedAt == request.time;
+
+      allow update: if isAdmin() && 
+                    isValidId(courseId) && 
+                    isValidCourse(incoming()) &&
+                    incoming().createdAt == existing().createdAt &&
+                    incoming().updatedAt == request.time;
+
+      allow delete: if isAdmin() && isValidId(courseId);
+    }
+  }
+}
